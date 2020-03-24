@@ -28,7 +28,7 @@ terralib.CUDAParams.entries = { { "gridDimX", uint },
                                 
 function cudalib.toptx(module,dumpmodule,version)
     dumpmodule,version = not not dumpmodule,assert(tonumber(version))
-    local cu = terralib.newcompilationunit(terralib.nativetarget,false) -- TODO: add nvptx target options here
+    local cu = terralib.newcompilationunit(terra.cudatarget, false) -- TODO: add nvptx target options here
     local annotations = terra.newlist{} -- list of annotations { functionname, annotationname, annotationvalue } to be tagged
     local function addkernel(k,fn)
         fn:setinlined(true)
@@ -73,8 +73,31 @@ function cudalib.toptx(module,dumpmodule,version)
             end
         end
     end
+
+    -- Find libdevice module
+    local libdevice
+    local libdevice_version
+    local dir = terra.cudahome..(ffi.os == 'Windows' and '\\nvvm\\libdevice' or '/nvvm/libdevice')
+    local cmd = ffi.os == 'Windows' and 'dir "'..dir..'" /b' or 'ls "'..dir..'"'
+    local pfile = io.popen(cmd)
+    for fname in pfile:lines() do
+        if fname:match('^libdevice%.10%.bc$') then
+            libdevice = dir..(ffi.os == 'Windows' and '\\' or '/')..fname
+            break
+        end
+        local x, y = fname:match('^libdevice%.compute_([0-9])([0-9])%.10%.bc$')
+        if x and y then
+            local v = 10 * x + y
+            if v <= version and (not libdevice or v > libdevice_version) then
+                libdevice = dir..(ffi.os == 'Windows' and '\\' or '/')..fname
+                libdevice_version = v
+            end
+        end
+    end
+    pfile:close()
+
     --call into tcuda.cpp to perform compilation
-    local r = terralib.toptximpl(cu,annotations,dumpmodule,version)
+    local r = terralib.toptximpl(cu,annotations,dumpmodule,version,libdevice)
     cu:free()
     return r
 end
@@ -121,6 +144,7 @@ local C = {
     cuModuleGetGlobal_v2 = ef("cuModuleGetGlobal_v2",{&uint64,&uint64,&CUmod_st,&int8} -> uint32);
     cuModuleLoadData = ef("cuModuleLoadData",{&&CUmod_st,&opaque} -> uint32);
     cuFuncGetAttribute = ef("cuFuncGetAttribute", {&int,int,&CUfunc_st} -> uint32);
+    cuGetErrorString = ef("cuGetErrorString", {uint32,&rawstring} -> uint32);
     exit = ef("exit",{int32} -> {});
     printf = ef("printf",terralib.types.funcpointer(&int8,int32,true));
     snprintf = ef(snprintf,terralib.types.funcpointer({&int8,uint64,&int8},int32,true));
@@ -190,7 +214,9 @@ local cd = macro(function(nm,...)
             if error_str ~= nil then
                 var start = C.strlen(error_str)
                 if error_sz - start > 0 then
-                    C.snprintf(error_str+start,error_sz - start,"%s: cuda reported error %d",nm,r)
+                    var s : rawstring
+                    C.cuGetErrorString(r, &s)
+                    C.snprintf(error_str+start,error_sz - start,"%s: cuda reported error %d: %s",nm,r,s)
                 end
             end
             return r

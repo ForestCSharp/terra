@@ -49,6 +49,10 @@ ifeq ($(shell sed -E '' </dev/null >/dev/null 2>&1 && echo yes || echo no),no)
 SED_E = sed -r
 endif
 
+TERRA_VERSION_RAW=$(shell git describe --tags 2>/dev/null || echo unknown)
+TERRA_VERSION=$(shell echo "$(TERRA_VERSION_RAW)" | $(SED_E) 's/^release-//')
+FLAGS += -DTERRA_VERSION_STRING="\"$(TERRA_VERSION)\""
+
 # Add the following lines to Makefile.inc to switch to LuaJIT-2.1 beta releases
 #LUAJIT_VERSION_BASE =2.1
 #LUAJIT_VERSION_EXTRA =.0-beta2
@@ -71,18 +75,17 @@ CPPFLAGS = -fno-rtti -Woverloaded-virtual -fvisibility-inlines-hidden
 
 LLVM_VERSION_NUM=$(shell $(LLVM_CONFIG) --version | sed -e s/svn//)
 LLVM_VERSION=$(shell echo $(LLVM_VERSION_NUM) | $(SED_E) 's/^([0-9]+)\.([0-9]+).*/\1\2/')
+LLVMVERGT4 := $(shell expr $(LLVM_VERSION) \>= 40)
 
 FLAGS += -DLLVM_VERSION=$(LLVM_VERSION)
-ifneq ($(LLVM_VERSION), 32)
 CPPFLAGS += -std=c++11
-endif
 
 
 ifneq ($(findstring $(UNAME), Linux FreeBSD),)
 DYNFLAGS = -shared -fPIC
 TERRA_STATIC_LIBRARY += -Wl,-export-dynamic -Wl,--whole-archive $(LIBRARY) -Wl,--no-whole-archive
 else
-DYNFLAGS = -dynamiclib -single_module -fPIC -install_name "@rpath/terra.so"
+DYNFLAGS = -dynamiclib -single_module -fPIC -install_name "@rpath/terra.dylib"
 TERRA_STATIC_LIBRARY =  -Wl,-force_load,$(LIBRARY)
 endif
 
@@ -93,16 +96,20 @@ LLVM_LIBRARY_FLAGS += -lclangFrontend -lclangDriver \
                       -lclangAnalysis \
                       -lclangEdit -lclangAST -lclangLex -lclangBasic
 
-CLANG_REWRITE_CORE = "32 33 34"
-ifneq (,$(findstring $(LLVM_VERSION),$(CLANG_REWRITE_CORE)))
-LLVM_LIBRARY_FLAGS += -lclangRewriteCore
+CLANG_AST_MATCHERS = "80 90"
+ifneq (,$(findstring $(LLVM_VERSION),$(CLANG_AST_MATCHERS)))
+LLVM_LIBRARY_FLAGS += -lclangASTMatchers
 endif
 
 # by default, Terra includes only the pieces of the LLVM libraries it needs,
 #  but this can be a problem if third-party-libraries that also need LLVM are
 #  used - allow the user to request that some/all of the LLVM components be
 #  included and re-exported in their entirety
-LLVM_LIBS += $(shell $(LLVM_CONFIG) --libs)
+ifeq "$(LLVMVERGT4)" "1"
+    LLVM_LIBS += $(shell $(LLVM_CONFIG) --libs --link-static)
+else
+	LLVM_LIBS += $(shell $(LLVM_CONFIG) --libs)
+endif
 ifneq ($(REEXPORT_LLVM_COMPONENTS),)
   REEXPORT_LIBS := $(shell $(LLVM_CONFIG) --libs $(REEXPORT_LLVM_COMPONENTS))
   ifneq ($(findstring $(UNAME), Linux FreeBSD),)
@@ -116,10 +123,10 @@ else
 endif
 
 # llvm sometimes requires ncurses and libz, check if they have the symbols, and add them if they do
-ifeq ($(shell nm $(LLVM_PREFIX)/lib/libLLVMSupport.a | grep setupterm 2>&1 >/dev/null; echo $$?), 0)
+ifeq ($(shell nm $(LLVM_PREFIX)/lib/libLLVMSupport.a | grep setupterm >/dev/null 2>&1; echo $$?), 0)
     SUPPORT_LIBRARY_FLAGS += -lcurses 
 endif
-ifeq ($(shell nm $(LLVM_PREFIX)/lib/libLLVMSupport.a | grep compress2 2>&1 >/dev/null; echo $$?), 0)
+ifeq ($(shell nm $(LLVM_PREFIX)/lib/libLLVMSupport.a | grep compress2 >/dev/null 2>&1; echo $$?), 0)
     SUPPORT_LIBRARY_FLAGS += -lz
 endif
 
@@ -149,12 +156,12 @@ FLAGS += -DTERRA_LLVM_HEADERS_HAVE_NDEBUG
 endif
 
 LIBOBJS = tkind.o tcompiler.o tllvmutil.o tcwrapper.o tinline.o terra.o lparser.o lstring.o lobject.o lzio.o llex.o lctype.o treadnumber.o tcuda.o tdebug.o tinternalizedfiles.o lj_strscan.o
-LIBLUA = terralib.lua strict.lua cudalib.lua asdl.lua
+LIBLUA = terralib.lua strict.lua cudalib.lua asdl.lua terralist.lua
 
 EXEOBJS = main.o linenoise.o
 
 EMBEDDEDLUA = $(addprefix build/,$(LIBLUA:.lua=.h))
-GENERATEDHEADERS = $(EMBEDDEDLUA) build/clangpaths.h build/internalizedfiles.h
+GENERATEDHEADERS = $(EMBEDDEDLUA) build/internalizedfiles.h
 
 LUAHEADERS = lua.h lualib.h lauxlib.h luaconf.h
 
@@ -165,7 +172,11 @@ LIBRARY = release/lib/libterra.a
 LIBRARY_NOLUA = release/lib/libterra_nolua.a
 LIBRARY_NOLUA_NOLLVM = release/lib/libterra_nolua_nollvm.a
 LIBRARY_VARIANTS = $(LIBRARY_NOLUA) $(LIBRARY_NOLUA_NOLLVM)
+ifeq ($(UNAME), Darwin)
+DYNLIBRARY = release/lib/terra.dylib
+else
 DYNLIBRARY = release/lib/terra.so
+endif
 RELEASE_HEADERS = $(addprefix release/include/terra/,$(LUAHEADERS))
 BIN2C = build/bin2c
 
@@ -197,14 +208,15 @@ endif
 
 build/lib/libluajit-5.1.a: build/$(LUAJIT_TAR)
 	(cd build; tar -xf $(LUAJIT_TAR))
-	(cd $(LUAJIT_DIR); $(MAKE) install PREFIX=$(realpath build) CC=$(CC) STATIC_CC="$(CC) -fPIC")
+	# MACOSX_DEPLOYMENT_TARGET is a workaround for https://github.com/LuaJIT/LuaJIT/issues/484
+	(cd $(LUAJIT_DIR); $(MAKE) install PREFIX=$(realpath build) CC=$(CC) STATIC_CC="$(CC) -fPIC" MACOSX_DEPLOYMENT_TARGET=10.6)
 
 release/include/terra/%.h:  $(LUAJIT_INCLUDE)/%.h $(LUAJIT_LIB) 
 	cp $(LUAJIT_INCLUDE)/$*.h $@
     
 build/llvm_objects/llvm_list:    $(addprefix build/, $(LIBOBJS) $(EXEOBJS))
 	mkdir -p build/llvm_objects/luajit
-	$(CXX) -o /dev/null $(addprefix build/, $(LIBOBJS) $(EXEOBJS)) $(LLVM_LIBRARY_FLAGS) $(SUPPORT_LIBRARY_FLAGS) $(LFLAGS) -Wl,-t | egrep "lib(LLVM|clang)"  > build/llvm_objects/llvm_list
+	$(CXX) -o /dev/null $(addprefix build/, $(LIBOBJS) $(EXEOBJS)) $(LLVM_LIBRARY_FLAGS) $(SUPPORT_LIBRARY_FLAGS) $(LFLAGS) -Wl,-t 2>&1 | egrep "lib(LLVM|clang)"  > build/llvm_objects/llvm_list
 	# extract needed LLVM objects based on a dummy linker invocation
 	< build/llvm_objects/llvm_list $(LUAJIT) src/unpacklibraries.lua build/llvm_objects
 	# include all luajit objects, since the entire lua interface is used in terra 
@@ -243,15 +255,10 @@ $(BIN2C):	src/bin2c.c
 
 
 #rule for packaging lua code into a header file
-# fix narrowing warnings by using unsigned char
-build/%.h:	src/%.lua $(PACKAGE_DEPS)
-	$(LUAJIT) -bg $< -t h - | sed "s/char/unsigned char/" > $@
-
-#run clang on a C file to extract the header search paths for this architecture
-#genclangpaths.lua find the path arguments and formats them into a C file that is included by the cwrapper
-#to configure the paths	
-build/clangpaths.h:	src/dummy.c $(PACKAGE_DEPS) src/genclangpaths.lua
-	$(LUAJIT) src/genclangpaths.lua $@ $(CLANG) $(CUDA_INCLUDES)
+build/%.bc:	src/%.lua $(PACKAGE_DEPS)
+	$(LUAJIT) -bg $< $@
+build/%.h:	build/%.bc $(PACKAGE_DEPS)
+	$(LUAJIT) src/genheader.lua $< $@
 
 build/internalizedfiles.h:	$(PACKAGE_DEPS) src/geninternalizedfiles.lua lib/std.t lib/parsing.t
 	$(LUAJIT) src/geninternalizedfiles.lua $@  $(CLANG_RESOURCE_DIRECTORY) "%.h$$" $(CLANG_RESOURCE_DIRECTORY) "%.modulemap$$" lib "%.t$$" 

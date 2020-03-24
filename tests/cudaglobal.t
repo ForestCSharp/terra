@@ -2,6 +2,10 @@ if not terralib.cudacompile then
 	print("CUDA not enabled, not performing test...")
 	return
 end
+if os.getenv("CI") then
+	print("Running in CI environment without a GPU, not performing test...")
+	return
+end
 
 local tid = cudalib.nvvm_read_ptx_sreg_tid_x--terralib.intrinsic("llvm.nvvm.read.ptx.sreg.tid.x",{} -> int)
 local ntid = cudalib.nvvm_read_ptx_sreg_ntid_x -- terralib.intrinsic("llvm.nvvm.read.ptx.sreg.ntid.x",{} -> int)
@@ -14,8 +18,6 @@ theconst = cudalib.constantmemory(int,1)
 terra foo(result : &float)
     result[tid()] = tid() + theone + theconst[0]
 end
-
-terralib.includepath = terralib.includepath..";/usr/local/cuda/include"
 
 local C = terralib.includecstring [[
 #include "cuda_runtime.h"

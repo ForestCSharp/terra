@@ -1,6 +1,6 @@
-local c = terralib.includecstring [[ 
-    #include <stdio.h>
+local C = terralib.includecstring [[ 
     #include <stdlib.h>
+    #include <stdio.h>
 ]]
 
 terra doit(N : int64)
@@ -13,14 +13,14 @@ end
 terra main(argc : int, argv : &&int8)
     var N = 4ULL
     if argc == 2 then
-        N = c.atoi(argv[1])
+        N = C.atoi(argv[1])
     end
     var result = doit(N)
-    c.printf("%lld\n",result)
+    C.printf("%lld\n",result)
 end
 
 terra what()
-	return c.atoi("54")
+	return C.atoi("54")
 end
 
 local test = require("test")

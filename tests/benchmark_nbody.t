@@ -1,8 +1,8 @@
 local C = terralib.includecstring[[
 
 #include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 ]]
 
@@ -138,9 +138,12 @@ local N = (...) or "1000000"
 local terra run()
     main(2,array("what",N))
 end
-local args
-if terralib.os ~= "Windows" then
-   args = {"-lm"}
+
+if jit.os ~= "Windows" then
+  terralib.saveobj("benchmark_nbody",{ main = main }, {"-lm"} )
+  os.execute("./benchmark_nbody "..tostring(N))
+else
+  terralib.saveobj("benchmark_nbody.exe",{ main = main } )
+  os.execute("benchmark_nbody.exe "..tostring(N))
 end
-terralib.saveobj("benchmark_nbody",{ main = main }, args )
-os.execute("./benchmark_nbody "..tostring(N))
+
